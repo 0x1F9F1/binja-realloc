@@ -22,7 +22,7 @@
 #include <malloc.h>
 #include <utility>
 
-#include <string>
+#include <stdint.h>
 
 #define RVA2VA(type, base, rva) (type)((ULONG_PTR)base + rva)
 
@@ -75,21 +75,33 @@ IMAGE_THUNK_DATA* FindIatThunk(void* moduleBase, const char* funcName)
     return nullptr;
 }
 
-using realloc_t = void* (*)(void*, size_t);
+void CreateCoreHook(const char* name, void* detour, void** original)
+{
+    void* module_base = (void*)GetModuleHandleA("binaryninjacore.dll");
+
+    void** iat_thunk = (void**)FindIatThunk(module_base, name);
+
+    DWORD old_protect;
+    VirtualProtect(iat_thunk, sizeof(*iat_thunk), PAGE_READWRITE, &old_protect);
+    *original = std::exchange(*iat_thunk, detour);
+    VirtualProtect(iat_thunk, sizeof(*iat_thunk), old_protect, &old_protect);
+}
+
+using realloc_t = decltype(&realloc);
 
 realloc_t realloc_orig = nullptr;
 
 void* realloc_hook(void* ptr, size_t size)
 {
     if (ptr) {
-        size_t old_size = _msize(ptr);
+        const size_t old_size = _msize(ptr);
+        const size_t half_old = old_size >> 1;
 
-        if (size > (old_size >> 1))
-        {
+        if (size > half_old) {
+            const size_t new_size = old_size + half_old;
+
             if (size < old_size)
                 return ptr;
-
-            size_t new_size = old_size + (old_size >> 1);
 
             if (size < new_size)
                 size = new_size;
@@ -99,14 +111,21 @@ void* realloc_hook(void* ptr, size_t size)
     return realloc_orig(ptr, size);
 }
 
+void InitHooks()
+{
+    CreateCoreHook("realloc", &realloc_hook, (void**)&realloc_orig);
+}
+
 extern "C" __declspec(dllexport) bool CorePluginInit()
 {
-    realloc_t* realloc_iat = (realloc_t*)FindIatThunk((void*)GetModuleHandleA("binaryninjacore.dll"), "realloc");
-
-    DWORD old_protect;
-    VirtualProtect(realloc_iat, sizeof(*realloc_iat), PAGE_READWRITE, &old_protect);
-    realloc_orig = std::exchange(*realloc_iat, &realloc_hook);
-    VirtualProtect(realloc_iat, sizeof(*realloc_iat), old_protect, &old_protect);
-
     return true;
+}
+
+BOOL APIENTRY DllMain(HMODULE /*hinstDLL*/, DWORD fdwReason, LPVOID /*lpvReserved*/)
+{
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        InitHooks();
+    }
+
+    return TRUE;
 }
