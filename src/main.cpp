@@ -87,6 +87,13 @@ void CreateCoreHook(const char* name, void* detour, void** original)
     VirtualProtect(iat_thunk, sizeof(*iat_thunk), old_protect, &old_protect);
 }
 
+HANDLE const __acrt_heap = reinterpret_cast<HANDLE>(_get_heap_handle()); // Should be equal to GetProcessHeap()
+
+static inline size_t _msize_nodbg(void* const block)
+{
+    return static_cast<size_t>(HeapSize(__acrt_heap, 0, block));
+}
+
 using realloc_t = decltype(&realloc);
 
 realloc_t realloc_orig = nullptr;
@@ -94,7 +101,7 @@ realloc_t realloc_orig = nullptr;
 void* realloc_hook(void* ptr, size_t size)
 {
     if (ptr) {
-        const size_t old_size = _msize(ptr);
+        const size_t old_size = _msize_nodbg(ptr);
         const size_t half_old = old_size >> 1;
 
         if (size > half_old) {
